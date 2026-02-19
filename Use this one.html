@@ -1,0 +1,79 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Three.js WebGL Renderer Example</title>
+    <style>
+        body { margin: 0; background: #000; }
+        canvas { display: block; }
+    </style>
+</head>
+<body>
+    
+    <!-- Include Three.js from CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.min.js"></script>
+    <script>
+        try {
+
+            // 1. Create the scene
+            const scene = new THREE.Scene();
+            scene.background = new THREE.Color(0x202020);
+
+            // 2. Create a perspective camera
+            const camera = new THREE.PerspectiveCamera(
+                75, // Field of view
+                window.innerWidth / window.innerHeight, // Aspect ratio
+                0.1, // Near clipping plane
+                1000 // Far clipping plane
+            );
+            camera.position.z = 5;
+
+            // 3. Create the WebGL renderer
+            const renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            document.body.appendChild(renderer.domElement);
+
+
+            // 4. Add a simple cube
+            const geometry = new THREE.BoxGeometry(4, 6, 0.05);
+            const material = new THREE.MeshStandardMaterial({ color: 0x00ff00 });
+            const cube = new THREE.Mesh(geometry, material);
+            scene.add(cube);
+
+
+            // 5. Add lighting
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight)
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.5);
+            directionalLight.position.set(7, 5, 1);
+            scene.add(directionalLight);
+
+
+
+            // 6. Handle window resize
+            window.addEventListener('resize', () => {
+                camera.aspect = window.innerWidth / window.innerHeight;
+                camera.updateProjectionMatrix();
+                renderer.setSize(window.innerWidth, window.innerHeight);
+            });
+
+            // 7. Animation loop
+            function animate() {
+                requestAnimationFrame(animate);
+
+                // Rotate cube
+                //cube.rotation.x += 0.01;
+                cube.rotation.y += 0.01;
+
+                renderer.render(scene, camera);
+            }
+            animate();
+        } catch (e) {
+            console.error(e);
+        }
+
+                </script>
+</body>
+</html>
+interpretation:This code sets up a basic Three.js scene with a rotating cube. It includes error handling to catch any issues that may arise during the setup or rendering process. The scene is responsive to window resizing, ensuring that the aspect ratio of the camera is maintained. The cube is illuminated by both ambient and directional light, creating a visually appealing effect.
