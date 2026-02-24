@@ -1,0 +1,430 @@
+<!doctype html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Rectangle with Shading Map + Room for Normal Map (WebGL2)</title>
+    <style>html,body,canvas{width:100%;height:100%;margin:0;display:block;}</style>give 
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Simple WebGL2 demo: rectangle (two triangles) with a shading (diffuse) map,
+// and a hook to plug in a normal map. Default normal map is flat; replace
+// image or call loadNormalMap(url) to apply a real normal map.
+
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2');
+if (!gl) { alert('WebGL2 required'); throw 0; }
+function resize(){ const dpr=window.devicePixelRatio||1; canvas.width = Math.floor(canvas.clientWidth*dpr); canvas.height = Math.floor(canvas.clientHeight*dpr); gl.viewport(0,0,canvas.width,canvas.height); }
+window.addEventListener('resize', resize);
+resize();
+
+// Shaders
+const vs = `#version 300 es
+in vec3 aPosition;
+in vec2 aUV;
+in vec3 aNormal;
+in vec3 aTangent;
+
+uniform mat4 uMVP;
+uniform mat4 uModel;
+
+out vec2 vUV;
+out vec3 vPos;
+out vec3 vNormal;
+out vec3 vTangent;
+
+void main(){
+    vec4 worldPos = uModel * vec4(aPosition,1.0);
+    vPos = worldPos.xyz;
+    vUV = aUV;
+    vNormal = mat3(uModel) * aNormal;
+    vTangent = mat3(uModel) * aTangent;
+    gl_Position = uMVP * vec4(aPosition,1.0);
+}
+`;
+
+const fs = `#version 300 es
+precision highp float;
+
+in vec2 vUV;
+in vec3 vPos;
+in vec3 vNormal;
+in vec3 vTangent;
+
+uniform sampler2D uDiffuseMap;
+uniform sampler2D uNormalMap;
+uniform bool uUseNormalMap;
+
+uniform vec3 uLightPos;
+uniform vec3 uViewPos;
+uniform vec3 uAmbient;
+
+out vec4 outColor;
+
+void main(){
+    // base normal
+    vec3 N = normalize(vNormal);
+    if(uUseNormalMap){
+        // sample normal map (tangent space -> world)
+        vec3 mapN = texture(uNormalMap, vUV).rgb;
+        // map from [0,1] to [-1,1]
+        mapN = mapN * 2.0 - 1.0;
+        vec3 T = normalize(vTangent);
+        vec3 B = normalize(cross(N, T));
+        mat3 TBN = mat3(T, B, N);
+        N = normalize(TBN * mapN);
+    }
+
+    vec3 L = normalize(uLightPos - vPos);
+    vec3 V = normalize(uViewPos - vPos);
+    float diff = max(dot(N, L), 0.0);
+
+    // specular
+    vec3 H = normalize(L + V);
+    float spec = pow(max(dot(N, H), 0.0), 32.0);
+
+    vec3 albedo = texture(uDiffuseMap, vUV).rgb;
+
+    vec3 color = uAmbient * albedo + diff * albedo + spec * vec3(1.0);
+    outColor = vec4(color, 1.0);
+}
+`;
+// Prevent the separate orbit-camera loop from starting (stops the rectangle from appearing to rotate).
+// Override requestAnimationFrame to ignore requests from the orbit script's drawFrame function
+// while allowing the main render loop's render() to run.
+(function(){
+    const origRAF = window.requestAnimationFrame.bind(window);
+    window.requestAnimationFrame = function(cb){
+        try{
+            const id = cb && (cb.name || cb.toString());
+            if(id && /drawFrame/.test(id)) return 0; // block orbit script's loop
+        }catch(e){}
+        return origRAF(cb);
+    };
+})();
+// Compile helpers
+function compile(type, src){
+    const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw gl.getShaderInfoLog(s);
+    return s;
+}
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, vs));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, fs));
+gl.linkProgram(prog);
+(function(){
+    const canvas = document.getElementById('c');
+    let rotX = 0, rotY = 0;
+    let dragging = false, lastX = 0, lastY = 0;
+    canvas.style.touchAction = 'none';
+
+    canvas.addEventListener('pointerdown', (e) => { dragging = true; lastX = e.clientX; lastY = e.clientY; try{ canvas.setPointerCapture(e.pointerId); }catch{} });
+    canvas.addEventListener('pointerup', (e) => { dragging = false; try{ canvas.releasePointerCapture(e.pointerId); }catch{} });
+    canvas.addEventListener('pointercancel', () => dragging = false);
+    canvas.addEventListener('pointermove', (e) => {
+        if (!dragging) return;
+        const dx = e.clientX - lastX, dy = e.clientY - lastY;
+        lastX = e.clientX; lastY = e.clientY;
+        rotY += dx * 0.01;
+        rotX += dy * 0.01;
+        const limit = Math.PI/2 - 0.01;
+        rotX = Math.max(-limit, Math.min(limit, rotX));
+    });
+    canvas.addEventListener('dblclick', () => { rotX = rotY = 0; });
+
+    // Patch mat4_identity after the rest of the script defines it (runs at end of current macrotask).
+    queueMicrotask(() => {
+        function rx(a){ const c = Math.cos(a), s = Math.sin(a); return [1,0,0,0, 0,c,s,0, 0,-s,c,0, 0,0,0,1]; }
+        function ry(a){ const c = Math.cos(a), s = Math.sin(a); return [c,0,-s,0, 0,1,0,0, s,0,c,0, 0,0,0,1]; }
+        // Replace mat4_identity to return rotation matrix driven by user input.
+        mat4_identity = function(){
+            const mx = rx(rotX), my = ry(rotY);
+            return mat4_mul(my, mx);
+        };
+    });
+
+    // Expose for debugging
+    window.objectRotation = {
+        get angles(){ return { x: rotX, y: rotY }; },
+        set angles(v){ rotX = v.x||0; rotY = v.y||0; },
+        reset(){ rotX = rotY = 0; }
+    };
+
+    return prog;
+})()
+if(!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw gl.getProgramInfoLog(prog);
+gl.useProgram(prog);
+
+
+// Make it taller (y scale up) and less wide (x scale down), and force UVs to the same sample so the diffuse appears a single color.
+const positions = new Float32Array([
+    -0.5, -1.0, 0,   0.5, -1.0, 0,   0.5, 1.0, 0,
+    -0.5, -1.0, 0,   0.5, 1.0, 0,   -0.5, 1.0, 0
+]);
+// shorten rectangle length (scale Y a little)
+const heightScale = 0.9;
+for (let i = 0; i < positions.length; i += 3) positions[i + 1] *= heightScale;
+
+/* Make the rectangle length a tiny bit shorter (additional slight Y scale) */
+for (let i = 0; i < positions.length; i += 3) positions[i + 1] *= 0.95;
+
+// Use the same UV for every vertex so the texture samples one texel -> uniform color.
+const uvs = new Float32Array([
+    0.5,0.5,  0.5,0.5,  0.5,0.5,
+    0.5,0.5,  0.5,0.5,  0.5,0.5
+]);
+
+const normals = new Float32Array([
+    0,0,1,  0,0,1,  0,0,1,
+    0,0,1,  0,0,1,  0,0,1
+]);
+
+// Tangent along +X for the rectangle (consistent with UV orientation)
+const tangents = new Float32Array([
+    1,0,0, 1,0,0, 1,0,0,
+    1,0,0, 1,0,0, 1,0,0
+
+]);
+
+function createVBO(data, loc, size){
+    const b = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, b);
+    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
+    const attrib = gl.getAttribLocation(prog, loc);
+    gl.enableVertexAttribArray(attrib);
+    gl.vertexAttribPointer(attrib, size, gl.FLOAT, false, 0, 0);
+}
+createVBO(positions, 'aPosition', 3);
+createVBO(uvs, 'aUV', 2);
+createVBO(normals, 'aNormal', 3);
+createVBO(tangents, 'aTangent', 3);
+
+// Uniform locations
+const uMVP = gl.getUniformLocation(prog, 'uMVP');
+const uModel = gl.getUniformLocation(prog, 'uModel');
+const uDiffuseMap = gl.getUniformLocation(prog, 'uDiffuseMap');
+const uNormalMap = gl.getUniformLocation(prog, 'uNormalMap');
+const uUseNormalMap = gl.getUniformLocation(prog, 'uUseNormalMap');
+const uLightPos = gl.getUniformLocation(prog, 'uLightPos');
+const uViewPos = gl.getUniformLocation(prog, 'uViewPos');
+const uAmbient = gl.getUniformLocation(prog, 'uAmbient');
+
+// Simple camera / transforms
+function mat4_identity(){ return [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]; }
+function mat4_mul(a,b){
+    const r = new Array(16);
+    for(let i=0;i<4;i++) for(let j=0;j<4;j++){
+        r[j*4+i] = a[i]*b[j*4] + a[i+4]*b[j*4+1] + a[i+8]*b[j*4+2] + a[i+12]*b[j*4+3];
+    }
+    return r;
+}
+function mat4_perspective(fov, aspect, near, far){
+    const f = 1/Math.tan(fov/2), nf = 1/(near - far);
+    return [f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,(2*far*near)*nf,0];
+}
+function mat4_lookAt(eye, center, up){
+    const z0=eye[0]-center[0], z1=eye[1]-center[1], z2=eye[2]-center[2];
+    let zl = Math.hypot(z0,z1,z2); const zx=z0/zl, zy=z1/zl, zz=z2/zl;
+    const x0 = up[1]*zz - up[2]*zy, x1 = up[2]*zx - up[0]*zz, x2 = up[0]*zy - up[1]*zx;
+    let xl = Math.hypot(x0,x1,x2); const xx=x0/xl, xy=x1/xl, xz=x2/xl;
+    const yx = zy*xz - zz*xy, yy = zz*xx - zx*xz, yz = zx*xy - zy*xx;
+    return [xx,yx,zx,0, xy,yy,zy,0, xz,yz,zz,0, -(xx*eye[0]+xy*eye[1]+xz*eye[2]), -(yx*eye[0]+yy*eye[1]+yz*eye[2]), -(zx*eye[0]+zy*eye[1]+zz*eye[2]),1];
+}
+
+// Textures
+function createTextureFromCanvas(canvas){
+    const t = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,canvas);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    return t;
+}
+
+// Procedural checkerboard diffuse map
+const diffCanvas = document.createElement('canvas'); diffCanvas.width = diffCanvas.height = 512;
+const dctx = diffCanvas.getContext('2d');
+const size = 8;
+for(let y=0;y<size;y++){
+    for(let x=0;x<size;x++){
+        dctx.fillStyle = ((x+y)&1)?'#7aa':'#225';
+        dctx.fillRect(x*(512/size), y*(512/size), 512/size, 512/size);
+    }
+}
+const diffuseTex = createTextureFromCanvas(diffCanvas);
+
+// Default flat normal map (RGB ~ 0.5,0.5,1)
+const nCanvas = document.createElement('canvas'); nCanvas.width = nCanvas.height = 512;
+const nctx = nCanvas.getContext('2d');
+nctx.fillStyle = 'rgb(128,128,255)'; nctx.fillRect(0,0,512,512);
+const normalTexDefault = createTextureFromCanvas(nCanvas);
+
+// Bind textures to units
+gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, diffuseTex); gl.uniform1i(uDiffuseMap, 0);
+gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, normalTexDefault); gl.uniform1i(uNormalMap, 1);
+
+// Expose loader to replace normal map (call loadNormalMap(url) from console or code)
+window.loadNormalMap = async function(url){
+    const img = new Image(); img.crossOrigin='anonymous';
+    await new Promise((res,rej)=>{ img.onload=res; img.onerror=rej; img.src=url; });
+    const t = gl.createTexture(); gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, t);
+    gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+    console.log('Normal map loaded:', url);
+};
+// Prevent automatic light animation: force a fixed light position by intercepting uniform updates.
+// Run after the rest of the script defines uLightPos.
+queueMicrotask(()=>{
+    const origUniform3fv = gl.uniform3fv.bind(gl);
+    const fixedLight = new Float32Array([1.5, 1.5, 1.2]); // static light position
+    gl.uniform3fv = function(loc, v){
+        if(loc === uLightPos) return origUniform3fv(loc, fixedLight);
+        return origUniform3fv(loc, v);
+    };
+});
+
+// Uniform defaults
+gl.uniform3fv(uLightPos, [1.5,1.5,2.0]);
+gl.uniform3fv(uViewPos, [0,0,3.0]);
+gl.uniform3fv(uAmbient, [0.15,0.15,0.15]);
+
+// Control: toggle using normal map (set true to enable).
+let useNormal = false; // change to true to enable normal mapping (default flat)
+gl.uniform1i(uUseNormalMap, useNormal);
+
+// Simple render loop
+function render(t){
+    resize();
+    gl.clearColor(0.12,0.12,0.12,1); gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    gl.enable(gl.DEPTH_TEST);
+
+    // Camera and transforms
+    const aspect = canvas.width / canvas.height;
+    const proj = mat4_perspective(Math.PI/4, aspect, 0.1, 100.0);
+    const eye = [0,0,3]; const center = [0,0,0]; const up=[0,1,0];
+    const view = mat4_lookAt(eye,center,up);
+    const mvp = mat4_mul(proj, view);
+    gl.uniformMatrix4fv(uMVP, false, new Float32Array(mvp));
+    gl.uniformMatrix4fv(uModel, false, new Float32Array(mat4_identity()));
+
+    // Animate light slowly
+    const lt = [Math.cos(t*0.001)*1.4, Math.sin(t*0.001)*1.0 + 0.6, 1.2];
+    gl.uniform3fv(uLightPos, lt);
+
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+
+// Quick UI hint in console
+console.log('Rectangle ready. Toggle normal mapping: set useNormal = true in console and then gl.uniform1i(uUseNormalMap, 1).');
+console.log('To load an external normal map: loadNormalMap("https://example.com/normal.png")');
+</script>
+</body>
+</html>
+<script>
+/* Orbit camera controls: drag to rotate, wheel to zoom. Renders on top of existing loop. */
+
+(function(){
+    const canvas = document.getElementById('c');
+    const gl = canvas.getContext('webgl2');
+
+    // Reuse the currently bound program from the other script
+    const prog = gl.getParameter(gl.CURRENT_PROGRAM);
+    if(!prog) return;
+
+    const locMVP = gl.getUniformLocation(prog, 'uMVP');
+    const locModel = gl.getUniformLocation(prog, 'uModel');
+    const locViewPos = gl.getUniformLocation(prog, 'uViewPos');
+    const locLightPos = gl.getUniformLocation(prog, 'uLightPos');
+
+    // Camera state
+    let theta = 0.0, phi = 0.0, radius = 3.0;
+    const target = [0,0,0];
+
+    // Pointer interaction
+    let dragging = false, lastX = 0, lastY = 0;
+    canvas.style.touchAction = 'none';
+    canvas.addEventListener('pointerdown', (e)=>{
+        dragging = true; lastX = e.clientX; lastY = e.clientY; canvas.setPointerCapture(e.pointerId);
+    });
+    canvas.addEventListener('pointerup', (e)=>{
+        dragging = false; try{ canvas.releasePointerCapture(e.pointerId); }catch(e){}
+    });
+    canvas.addEventListener('pointercancel', ()=> dragging = false);
+    canvas.addEventListener('pointermove', (e)=>{
+        if(!dragging) return;
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        lastX = e.clientX; lastY = e.clientY;
+        theta -= dx * 0.005;
+        phi   -= dy * 0.005;
+        const eps = 0.01;
+        phi = Math.max(eps, Math.min(Math.PI - eps, phi));
+    });
+    canvas.addEventListener('wheel', (e)=>{
+        e.preventDefault();
+        radius *= 1 + Math.sign(e.deltaY) * 0.08;
+        radius = Math.max(0.3, Math.min(20, radius));
+    }, { passive: false });
+
+    // Math helpers (column-major matrices, compatible with original shader uniforms)
+    function mulMat(a,b){
+        const r = new Array(16);
+        for(let i=0;i<4;i++) for(let j=0;j<4;j++){
+            r[j*4+i] = a[i]*b[j*4] + a[i+4]*b[j*4+1] + a[i+8]*b[j*4+2] + a[i+12]*b[j*4+3];
+        }
+        return r;
+    }
+    function perspectiveCam(fov, aspect, near, far){
+        const f = 1/Math.tan(fov/2), nf = 1/(near - far);
+        return [f/aspect,0,0,0, 0,f,0,0, 0,0,(far+near)*nf,-1, 0,0,(2*far*near)*nf,0];
+    }
+    function lookAtCam(eye, center, up){
+        const z0 = eye[0]-center[0], z1 = eye[1]-center[1], z2 = eye[2]-center[2];
+        let zl = Math.hypot(z0,z1,z2); const zx = z0/zl, zy = z1/zl, zz = z2/zl;
+        const x0 = up[1]*zz - up[2]*zy, x1 = up[2]*zx - up[0]*zz, x2 = up[0]*zy - up[1]*zx;
+        let xl = Math.hypot(x0,x1,x2); const xx = x0/xl, xy = x1/xl, xz = x2/xl;
+        const yx = zy*xz - zz*xy, yy = zz*xx - zx*xz, yz = zx*xy - zy*xx;
+        return [xx,yx,zx,0, xy,yy,zy,0, xz,yz,zz,0, -(xx*eye[0]+xy*eye[1]+xz*eye[2]), -(yx*eye[0]+yy*eye[1]+yz*eye[2]), -(zx*eye[0]+zy*eye[1]+zz*eye[2]),1];
+    }
+
+    function identityMat(){ return [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]; }
+
+    // Our render loop draws using the same attributes/textures already bound in the other script.
+    function drawFrame(t){
+        // compute camera from spherical coords
+        const sx = Math.sin(phi) * Math.cos(theta);
+        const sy = Math.cos(phi);
+        const sz = Math.sin(phi) * Math.sin(theta);
+        const eye = [target[0] + radius * sx, target[1] + radius * sy, target[2] + radius * sz];
+
+        // projection/view
+        const aspect = canvas.width / canvas.height || 1;
+        const proj = perspectiveCam(Math.PI/4, aspect, 0.1, 100.0);
+        const view = lookAtCam(eye, target, [0,1,0]);
+        const mvp = mulMat(proj, view);
+
+        gl.useProgram(prog);
+        gl.uniformMatrix4fv(locMVP, false, new Float32Array(mvp));
+        gl.uniformMatrix4fv(locModel, false, new Float32Array(identityMat()));
+        gl.uniform3fv(locViewPos, new Float32Array(eye));
+        // keep light moving similarly to main loop timebase
+        const lt = [Math.cos(t*0.001)*1.4, Math.sin(t*0.001)*1.0 + 0.6, 1.2];
+        if(locLightPos) gl.uniform3fv(locLightPos, new Float32Array(lt));
+
+        gl.drawArrays(gl.TRIANGLES, 0, 6);
+        requestAnimationFrame(drawFrame);
+    }
+
+    requestAnimationFrame(drawFrame);
+
+})();
+</script>
