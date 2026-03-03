@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<!-- 
+manuscript viewer w/ object controls
+(controls hacked from https://threejs.org/examples/#misc_controls_transform)
+jaf - 5/5/19, created
+Copyright 2026 James A. Ferwerda, All rights reserved.
+ -->
+		
+<html lang="en">
+
+	<head>
+		<title>manuscript_mouse</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<style>
+			body {
+				margin: 0px;
+				background-color: #000000;
+				color: #fff;
+				font-family:Monospace;
+				text-align: center;
+				font-size: 15px;
+				line-height: 30px;
+				overflow: hidden;
+			}
+			
+			#info {
+				position: absolute;
+				top: 0px; width: 100%;
+				padding: 15px;
+				z-index:100;
+				box-sizing: border-box;
+			}
+			
+			a {
+				color: white;
+			}
+		</style>
+	</head>
+	
+	<body>
+		
+		<div id="container"></div>
+		<div id="info"></div>
+		
+		<!-- load javascript libraries and functions we're going to need -->
+		<script src="../build/three.js"></script>
+		<script src="../js/WebGL.js"></script>
+
+		<script src="../js/controls/OrbitControls.js"></script>
+		<script src="../js/controls/TransformControls.js"></script>
+		
+		<script src="../js/loaders/RGBELoader.js"></script>
+		<script src="../js/loaders/HDRCubeTextureLoader.js"></script>
+
+		<script src="../js/pmrem/PMREMGenerator.js"></script>
+		<script src="../js/pmrem/PMREMCubeUVPacker.js"></script>
+
+		<script>
+		
+// main loop
+		
+			// make sure webGL is available
+			if ( WEBGL.isWebGLAvailable() === false ) {
+				document.body.appendChild( WEBGL.getWebGLErrorMessage() );	
+				}
+			
+			// define some global variables
+			var container;
+			var camera, scene, renderer, control, orbit;
+			var hdrCubeRenderTarget, hdrCubeMap;
+
+			init();
+			animate();
+			
+// local functions below			
+
+			// set up the scene and device controls	
+			function init() {
+			
+				// create a container for the graphics content
+				container = document.createElement('div');
+				document.body.appendChild(container);
+				
+				// create a renderer for the graphics content
+				renderer = new THREE.WebGLRenderer();
+				renderer.setSize(window.innerWidth, window.innerHeight);
+				renderer.setPixelRatio(window.devicePixelRatio);
+				renderer.toneMapping = THREE.ReinhardToneMapping;
+				renderer.gammaInput = true;
+				renderer.gammaOutput = true;
+				
+				// attach the renderer to the container
+				container.appendChild(renderer.domElement);
+				
+				// create a new scene
+				scene = new THREE.Scene();
+				
+				// load a HDR cubemap to serve as the scene background and object illumination map
+				var hdrUrls = [ 'px.hdr', 'nx.hdr', 'py.hdr', 'ny.hdr', 'pz.hdr', 'nz.hdr' ];
+				hdrCubeMap = new THREE.HDRCubeTextureLoader()
+					.setPath( './textures/env/ennis/' )
+					.load( THREE.UnsignedByteType, hdrUrls, function() {
+
+						var pmremGenerator = new THREE.PMREMGenerator(hdrCubeMap);
+						pmremGenerator.update(renderer);
+
+						var pmremCubeUVPacker = new THREE.PMREMCubeUVPacker(pmremGenerator.cubeLods);
+						pmremCubeUVPacker.update(renderer);
+
+						hdrCubeRenderTarget = pmremCubeUVPacker.CubeUVRenderTarget;
+
+						hdrCubeMap.magFilter = THREE.LinearFilter;
+						hdrCubeMap.needsUpdate = true;
+
+						pmremGenerator.dispose();
+						pmremCubeUVPacker.dispose();
+
+						});
+						
+				// set the cubemap as the scene background
+				scene.background = hdrCubeMap;
+				
+				// add the object to the scene
+				var geometry = new THREE.PlaneGeometry(1024,1024,32,8);
+				var material = new THREE.MeshStandardMaterial({
+					map: new THREE.TextureLoader().load('./textures/obj/manuscript_3js_v3/A_1024_flat_g100.png'),
+					metalness: 1.0,
+					metalnessMap: new THREE.TextureLoader().load('./textures/obj/manuscript_3js_v3/M_1024.png'),
+					roughness: 1.0,
+					roughnessMap: new THREE.TextureLoader().load('./textures/obj/manuscript_3js_v3/R_1024.png'),
+					displacementMap: new THREE.TextureLoader().load('./textures/obj/manuscript_3js_v3/H_1024.png'),
+					displacementScale: 50.0,
+					displacementBias: 0.0,
+					normalMap: new THREE.TextureLoader().load('./textures/obj/manuscript_3js_v3/N_1024.png'),
+					normalScale: new THREE.Vector2(0.5,0.5),
+					alphaMap: new THREE.TextureLoader().load('./textures/obj/manuscript_3js_v3/T_1024.png'),
+					transparent: true,
+					side: THREE.DoubleSide	
+					});
+					
+				objMesh = new THREE.Mesh(geometry, material);
+				objMesh.lookAt(new THREE.Vector3(0,0,1));
+				scene.add(objMesh);
+				
+				// add a camera to the scene
+				camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 3000);
+				camera.position.set(0, 0, 1000);
+				camera.lookAt(0, 0, 0);
+
+				// add the orbit controls
+				orbit = new THREE.OrbitControls(camera, renderer.domElement);
+				orbit.update();
+				orbit.addEventListener('change', render);
+
+				// add the transform controls, turn off orbit if dragging?
+				control = new THREE.TransformControls(camera, renderer.domElement);
+				control.addEventListener('change', render);
+				control.addEventListener('dragging-changed', function (event) {
+					orbit.enabled = ! event.value;
+					});
+				
+				// set transform controls to rotate
+				control.setMode( "rotate" );
+
+				// attach the transform controls to the object, then add controls to scene
+				control.attach(objMesh);
+				scene.add(control);
+
+				// standard resize handler
+				window.addEventListener( 'resize', onWindowResize, false );
+				
+				}
+
+			// animation loop
+			function animate() {
+				requestAnimationFrame(animate);
+				render();
+				}
+
+			// scene renderer
+			function render() {			
+				var renderTarget, newEnvMap;
+
+				// update the object env map if necessary
+				renderTarget = hdrCubeRenderTarget;
+				newEnvMap = renderTarget ? renderTarget.texture : null;
+				if ( newEnvMap && newEnvMap !== objMesh.material.envMap ) {
+					objMesh.material.envMap = newEnvMap;
+					objMesh.material.needsUpdate = true;
+					}
+
+				// render the scene
+				renderer.render(scene, camera);	
+				}
+					
+			// window resize handler	
+			function onWindowResize() {
+				var width = window.innerWidth;
+				var height = window.innerHeight;
+				camera.aspect = width/height;
+				camera.updateProjectionMatrix();
+				renderer.setSize(width, height);
+				}
+
+		</script>
+
+	</body>
+</html>
